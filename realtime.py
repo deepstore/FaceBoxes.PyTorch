@@ -13,6 +13,11 @@ from models.faceboxes import FaceBoxes
 from utils.box_utils import decode
 from utils.timer import Timer
 
+import sys
+sys.path.append('../')
+
+from sort.sort import *
+
 parser = argparse.ArgumentParser(description='FaceBoxes')
 parser.add_argument('-m', '--trained_model', default='weights/FaceBoxes.pth', type=str, help='Trained state_dict file path to open')
 parser.add_argument('--save_folder', default='eval/', type=str, help='Dir to save results')
@@ -25,6 +30,7 @@ parser.add_argument('--keep_top_k', default=750, type=int, help='keep_top_k')
 parser.add_argument('-s', '--show_image', action="store_true", default=False, help='show detection results')
 parser.add_argument('--vis_thres', default=0.5, type=float, help='visualization_threshold')
 args = parser.parse_args()
+
 
 
 def check_keys(model, pretrained_state_dict):
@@ -98,10 +104,22 @@ if __name__ == '__main__':
 
     _t = {'forward_pass': Timer(), 'misc': Timer()}
 
+    cam = cv2.VideoCapture(0)
+
+    mot_tracker = Sort()
+
     # testing begin
-    for i, img_name in enumerate(test_dataset):
-        image_path = testset_folder + img_name + '.jpg'
-        img_raw = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    i = 0
+    while True:
+        i = i + 1
+        img_name = f'{i}'
+        if cv2.waitKey(1) == 27:
+            break  # esc to quit
+        _, img = cam.read()
+        # do mirroring
+        img_raw = cv2.flip(img, 1)
+        # image_path = testset_folder + img_name + '.jpg'
+        # img_raw = cv2.imread(image_path, cv2.IMREAD_COLOR)
         img = np.float32(img_raw)
         if resize != 1:
             img = cv2.resize(img, None, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR)
@@ -148,7 +166,7 @@ if __name__ == '__main__':
 
         # save dets
         if args.dataset == "FDDB":
-            fw.write('{:s}\n'.format(img_name))
+            fw.write('{:s}\n'.format(i))
             fw.write('{:.1f}\n'.format(dets.shape[0]))
             for k in range(dets.shape[0]):
                 xmin = dets[k, 0]
@@ -171,17 +189,30 @@ if __name__ == '__main__':
         print('im_detect: {:d}/{:d} forward_pass_time: {:.4f}s misc: {:.4f}s'.format(i + 1, num_images, _t['forward_pass'].average_time, _t['misc'].average_time))
 
         # show image
-        if True:
-            for b in dets:
-                if b[4] < args.vis_thres:
-                    continue
-                text = "{:.4f}".format(b[4])
-                b = list(map(int, b))
-                cv2.rectangle(img_raw, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
-                cx = b[0]
-                cy = b[1] + 12
-                cv2.putText(img_raw, text, (cx, cy),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
-            cv2.imwrite(f'res/{i}.jpg', img_raw)
+        for b in dets:
+            if b[4] < args.vis_thres:
+                continue
+            
+            text = "{:.4f}".format(b[4])
+            b = list(map(int, b))
+            cv2.rectangle(img_raw, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
+            cx = b[0]
+            cy = b[1] + 12
+            cv2.putText(img_raw, text, (cx, cy),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
+            track_bbs_ids = mot_tracker.update(dets)
+            print("_______ids_________: ", track_bbs_ids)
+            for _id in track_bbs_ids:
+                _cx = int(_id[0])
+                _cy = int(_id[1] - 20)
+                _text = str(_id[4])
+                cv2.putText(img_raw, _text, (_cx, _cy), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 0))
+
+        img_raw = cv2.resize(img_raw, (0,0), fx=8, fy=8) 
+        cv2.imshow('my webcam', img_raw)
+
+        # cv2.imwrite(f'res/{i}.jpg', img_raw)
 
     fw.close()
+    # Close modal window
+    cv2.destroyAllWindows()
