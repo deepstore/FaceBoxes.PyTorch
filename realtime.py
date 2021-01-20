@@ -132,11 +132,15 @@ if __name__ == '__main__':
     i = 0
     while True:
         start = datetime.now()
+        _start = datetime.now()
         i = i + 1
         img_name = f'{i}'
         if cv2.waitKey(1) == 27:
             break  # esc to quit
+        __start = datetime.now()
         _, img = cam.read()
+        __end= datetime.now()
+        print("___CAPTURE____: ", (__end - __start).total_seconds())
         # do mirroring
         img_raw = cv2.flip(img, 1)
         # image_path = testset_folder + img_name + '.jpg'
@@ -154,7 +158,15 @@ if __name__ == '__main__':
         scale = scale.to(device)
 
         _t['forward_pass'].tic()
+        __start = datetime.now()
         loc, conf = net(img)  # forward pass
+        __end= datetime.now()
+        print("___DETECTION____: ", (__end - __start).total_seconds())
+
+        _end = datetime.now()
+        print("___SHORI___0____: ", (_end - _start).total_seconds())
+        _start = datetime.now()
+
         _t['forward_pass'].toc()
         _t['misc'].tic()
         priorbox = PriorBox(cfg, image_size=(im_height, im_width))
@@ -165,6 +177,9 @@ if __name__ == '__main__':
         boxes = boxes * scale / resize
         boxes = boxes.cpu().numpy()
         scores = conf.squeeze(0).data.cpu().numpy()[:, 1]
+        _end = datetime.now()
+        print("___SHORI___1____: ", (_end - _start).total_seconds())
+        _start = datetime.now()
 
         # ignore low scores
         inds = np.where(scores > args.confidence_threshold)[0]
@@ -185,6 +200,9 @@ if __name__ == '__main__':
         # keep top-K faster NMS
         dets = dets[:args.keep_top_k, :]
         _t['misc'].toc()
+        _end = datetime.now()
+        print("___SHORI___2____: ", (_end - _start).total_seconds())
+        _start = datetime.now()
 
         # show image
         for b in dets:
@@ -204,7 +222,10 @@ if __name__ == '__main__':
                 face_img = torch.unsqueeze(face_img, 0)
                 face_img = face_img.to(device)
                 # start = datetime.now()
+                __start = datetime.now()
                 res = handle_faces(fastagender_model, face_img)
+                __end= datetime.now()
+                print("___METAINFO____: ", (__end - __start).total_seconds())
                 # end = datetime.now()
                 # print("TOTAL_SEC: ", (end - start).total_seconds())
                 cv2.putText(img_raw, res, (x1 - 10, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 0))
@@ -222,6 +243,10 @@ if __name__ == '__main__':
                 _cy = int(_id[1] - 20)
                 _text = str(_id[4])
                 cv2.putText(img_raw, _text, (_cx, _cy), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 0))
+
+        _end = datetime.now()
+        print("___SHORI___3____: ", (_end - _start).total_seconds())
+        _start = datetime.now()
 
         end = datetime.now()
         fps = 1000 / ((end - start).total_seconds() * 1000)
