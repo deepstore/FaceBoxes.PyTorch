@@ -12,11 +12,16 @@ import cv2
 from models.faceboxes import FaceBoxes
 from utils.box_utils import decode
 from utils.timer import Timer
+from datetime import datetime
 
 import sys
 sys.path.append('../')
 
 from sort.sort import *
+from fast_agender.main import get_trt_model, handle_faces, get_trt_model
+from fast_agender.data import AgenderDataset
+
+fastagender_model = get_trt_model()
 
 parser = argparse.ArgumentParser(description='FaceBoxes')
 parser.add_argument('-m', '--trained_model', default='weights/FaceBoxes.pth', type=str, help='Trained state_dict file path to open')
@@ -52,7 +57,7 @@ def remove_prefix(state_dict, prefix):
     f = lambda x: x.split(prefix, 1)[-1] if x.startswith(prefix) else x
     return {f(key): value for key, value in state_dict.items()}
 
-
+device = torch.cuda.current_device()
 def load_model(model, pretrained_path, load_to_cpu):
     print('Loading pretrained model from {}'.format(pretrained_path))
     if load_to_cpu:
@@ -68,13 +73,28 @@ def load_model(model, pretrained_path, load_to_cpu):
     model.load_state_dict(pretrained_dict, strict=False)
     return model
 
+from torch2trt import TRTModule
+
+def get_trt_model():
+    """
+    Get the fast face agender model in order to cache on memory
+    """
+    trt_path = "weights/model_trt.pth"
+    model_trt = TRTModule()
+    model_trt.load_state_dict(torch.load(trt_path))
+    return model_trt
+
+
+from datetime import datetime
 
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
     # net and model
-    net = FaceBoxes(phase='test', size=None, num_classes=2)    # initialize detector
-    net = load_model(net, args.trained_model, args.cpu)
-    net.eval()
+    # net = FaceBoxes(phase='test', size=None, num_classes=2)    # initialize detector
+    # net = load_model(net, args.trained_model, args.cpu)
+    # net.eval()
+    net = get_trt_model()
+    
     print('Finished loading model!')
     print(net)
     cudnn.benchmark = True
@@ -88,11 +108,11 @@ if __name__ == '__main__':
     fw = open(os.path.join(args.save_folder, args.dataset + '_dets.txt'), 'w')
 
     # testing dataset
-    testset_folder = os.path.join('data', args.dataset, 'images/')
-    testset_list = os.path.join('data', args.dataset, 'img_list.txt')
-    with open(testset_list, 'r') as fr:
-        test_dataset = fr.read().split()
-    num_images = len(test_dataset)
+    # testset_folder = os.path.join('data', args.dataset, 'images/')
+    # testset_list = os.path.join('data', args.dataset, 'img_list.txt')
+    # with open(testset_list, 'r') as fr:
+    #     test_dataset = fr.read().split()
+    # num_images = len(test_dataset)
 
     # testing scale
     if args.dataset == "FDDB":
@@ -111,6 +131,7 @@ if __name__ == '__main__':
     # testing begin
     i = 0
     while True:
+        start = datetime.now()
         i = i + 1
         img_name = f'{i}'
         if cv2.waitKey(1) == 27:
@@ -129,6 +150,7 @@ if __name__ == '__main__':
         img = img.transpose(2, 0, 1)
         img = torch.from_numpy(img).unsqueeze(0)
         img = img.to(device)
+        # print("______________________img____________Shape__________________", img.shape)
         scale = scale.to(device)
 
         _t['forward_pass'].tic()
@@ -164,51 +186,48 @@ if __name__ == '__main__':
         dets = dets[:args.keep_top_k, :]
         _t['misc'].toc()
 
-        # save dets
-        if args.dataset == "FDDB":
-            fw.write('{:s}\n'.format(i))
-            fw.write('{:.1f}\n'.format(dets.shape[0]))
-            for k in range(dets.shape[0]):
-                xmin = dets[k, 0]
-                ymin = dets[k, 1]
-                xmax = dets[k, 2]
-                ymax = dets[k, 3]
-                score = dets[k, 4]
-                w = xmax - xmin + 1
-                h = ymax - ymin + 1
-                fw.write('{:.3f} {:.3f} {:.3f} {:.3f} {:.10f}\n'.format(xmin, ymin, w, h, score))
-        else:
-            for k in range(dets.shape[0]):
-                xmin = dets[k, 0]
-                ymin = dets[k, 1]
-                xmax = dets[k, 2]
-                ymax = dets[k, 3]
-                ymin += 0.2 * (ymax - ymin + 1)
-                score = dets[k, 4]
-                fw.write('{:s} {:.3f} {:.1f} {:.1f} {:.1f} {:.1f}\n'.format(img_name, score, xmin, ymin, xmax, ymax))
-        print('im_detect: {:d}/{:d} forward_pass_time: {:.4f}s misc: {:.4f}s'.format(i + 1, num_images, _t['forward_pass'].average_time, _t['misc'].average_time))
-
         # show image
         for b in dets:
             if b[4] < args.vis_thres:
                 continue
-            
+
+            x1, y1, x2, y2 = int(b[0]), int(b[1]), int(b[2]), int(b[3])
+            # print(x1, y1, x2, y2)
+            face_img = img_raw[y1:y2, x1:x2]
+            # cv2.imwrite(f'res/{i}.jpg', face_img)
+            # preprocessing here 
+            # print("_____face_img.shape_____", face_img.shape)
+            height, width, chan = face_img.shape
+            if height > 30 and width > 30:
+                face_img = AgenderDataset.img_np_to_tensor(face_img)
+                # make tensor as batch
+                face_img = torch.unsqueeze(face_img, 0)
+                face_img = face_img.to(device)
+                # start = datetime.now()
+                res = handle_faces(fastagender_model, face_img)
+                # end = datetime.now()
+                # print("TOTAL_SEC: ", (end - start).total_seconds())
+                cv2.putText(img_raw, res, (x1 - 10, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 0))
+
             text = "{:.4f}".format(b[4])
             b = list(map(int, b))
             cv2.rectangle(img_raw, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
             cx = b[0]
             cy = b[1] + 12
-            cv2.putText(img_raw, text, (cx, cy),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
+            cv2.putText(img_raw, text, (cx, cy), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
             track_bbs_ids = mot_tracker.update(dets)
-            print("_______ids_________: ", track_bbs_ids)
+            # print("_______ids_________: ", track_bbs_ids)
             for _id in track_bbs_ids:
                 _cx = int(_id[0])
                 _cy = int(_id[1] - 20)
                 _text = str(_id[4])
                 cv2.putText(img_raw, _text, (_cx, _cy), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 0))
 
-        img_raw = cv2.resize(img_raw, (0,0), fx=8, fy=8) 
+        end = datetime.now()
+        fps = 1000 / ((end - start).total_seconds() * 1000)
+        print("FPS: ", fps)
+        img_raw = cv2.resize(img_raw, (0,0), fx=2, fy=2) 
+        # print("FPS ", 1000 / (end - start).total_seconds())
         cv2.imshow('my webcam', img_raw)
 
         # cv2.imwrite(f'res/{i}.jpg', img_raw)
